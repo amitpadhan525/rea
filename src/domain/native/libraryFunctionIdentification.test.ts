@@ -234,4 +234,26 @@ describe("identifyLibraryFunctions resource limits", () => {
       ),
     ).toThrow(z.ZodError);
   });
+
+  it("accepts the token limit with mixed whitespace and rejects oversized tokens", () => {
+    const pattern = Array.from(
+      { length: MAX_LIBRARY_SIGNATURE_PATTERN_TOKENS },
+      () => "90",
+    ).join(" \n\t");
+    const result = identifyLibraryFunctions(
+      [
+        {
+          function_id: "f",
+          bytes: Array(MAX_LIBRARY_SIGNATURE_PATTERN_TOKENS).fill(0x90),
+        },
+      ],
+      [signature("bounded", pattern)],
+    );
+    expect(result.identified[0]?.matches[0]?.pattern_length).toBe(
+      MAX_LIBRARY_SIGNATURE_PATTERN_TOKENS,
+    );
+    expect(() =>
+      identifyLibraryFunctions([], [signature("bad", "9".repeat(100_000))]),
+    ).toThrow(z.ZodError);
+  });
 });

@@ -98,11 +98,7 @@ type CompiledSignature = LibraryFunctionSignature & {
 };
 
 const parseSignature = (raw: LibraryFunctionSignature): CompiledSignature => {
-  const tokens = raw.pattern.split(/\s+/u);
-  if (
-    tokens.length > MAX_LIBRARY_SIGNATURE_PATTERN_TOKENS ||
-    tokens.some((token) => !signatureToken.test(token))
-  )
+  const invalidPattern = (): never => {
     throw new z.ZodError([
       {
         code: "custom",
@@ -110,9 +106,25 @@ const parseSignature = (raw: LibraryFunctionSignature): CompiledSignature => {
         message: `Pattern must contain at most ${MAX_LIBRARY_SIGNATURE_PATTERN_TOKENS} hexadecimal or ?? tokens`,
       },
     ]);
-  const bytes = tokens.map((token) =>
-    token === "??" ? null : Number.parseInt(token, 16),
-  );
+  };
+  // Reject excess or malformed tokens while scanning, before constructing an
+  // array proportional to an untrusted pattern's full length.
+  const bytes: (number | null)[] = [];
+  let offset = 0;
+  while (offset < raw.pattern.length) {
+    while (offset < raw.pattern.length && /\s/u.test(raw.pattern[offset]!))
+      offset++;
+    if (offset === raw.pattern.length) break;
+    if (bytes.length === MAX_LIBRARY_SIGNATURE_PATTERN_TOKENS) invalidPattern();
+    const start = offset;
+    while (offset < raw.pattern.length && !/\s/u.test(raw.pattern[offset]!)) {
+      offset++;
+      if (offset - start > 2) invalidPattern();
+    }
+    const token = raw.pattern.slice(start, offset);
+    if (!signatureToken.test(token)) invalidPattern();
+    bytes.push(token === "??" ? null : Number.parseInt(token, 16));
+  }
   const wildcard_count = bytes.filter((byte) => byte === null).length;
   const concrete_count = bytes.length - wildcard_count;
   if (concrete_count === 0)

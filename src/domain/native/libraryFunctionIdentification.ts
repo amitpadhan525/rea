@@ -20,9 +20,16 @@ export const libraryFunctionBytesSchema = z.array(
   z.number().int().min(0).max(255),
 );
 
+const libraryFunctionIdSchema = z.string().min(1);
+
 export const libraryFunctionInputSchema = z.strictObject({
-  function_id: z.string().min(1),
+  function_id: libraryFunctionIdSchema,
   bytes: libraryFunctionBytesSchema,
+});
+
+const libraryFunctionInputEnvelopeSchema = z.strictObject({
+  function_id: libraryFunctionIdSchema,
+  bytes: z.unknown(),
 });
 
 export const libraryFunctionBudgetsSchema = z.strictObject({
@@ -150,6 +157,7 @@ const matches = (
   bytes: readonly number[],
   signature: CompiledSignature,
 ): boolean =>
+  bytes.length >= signature.bytes.length &&
   signature.bytes.every(
     (expected, index) => expected === null || expected === bytes[index],
   );
@@ -178,15 +186,43 @@ const rankMatches = (
         compareUnicodeCodePoints(left.signature_id, right.signature_id),
     );
 
+const parseFunctionIdWithoutBytes = (rawInput: unknown): string => {
+  if (
+    typeof rawInput !== "object" ||
+    rawInput === null ||
+    Array.isArray(rawInput)
+  )
+    return libraryFunctionInputEnvelopeSchema.parse(rawInput).function_id;
+
+  const keys = Object.keys(rawInput);
+  if (
+    keys.length !== 2 ||
+    !keys.includes("function_id") ||
+    !keys.includes("bytes")
+  )
+    return libraryFunctionInputEnvelopeSchema.parse(rawInput).function_id;
+
+  return libraryFunctionIdSchema.parse(
+    (rawInput as { readonly function_id: unknown }).function_id,
+  );
+};
+
 export const identifyLibraryFunctions = (
   rawFunctions: readonly unknown[],
   rawSignatures: readonly unknown[],
   rawBudgets: unknown = {},
 ): LibraryFunctionIdentification => {
   const budgets = libraryFunctionBudgetsSchema.parse(rawBudgets);
-  const functions = rawFunctions.map((input) =>
-    libraryFunctionInputSchema.parse(input),
-  );
+  if (!Array.isArray(rawFunctions)) z.array(z.unknown()).parse(rawFunctions);
+  if (!Array.isArray(rawSignatures)) z.array(z.unknown()).parse(rawSignatures);
+  if (rawSignatures.length > budgets.max_signatures)
+    throw new z.ZodError([
+      {
+        code: "custom",
+        path: [],
+        message: `Signature set exceeds the maximum of ${budgets.max_signatures} signatures`,
+      },
+    ]);
   const signatures = compileSignatures(
     rawSignatures.map((signature) =>
       libraryFunctionSignatureSchema.parse(signature),
@@ -195,21 +231,27 @@ export const identifyLibraryFunctions = (
   );
   const identified: LibraryFunctionIdentification["identified"] = [];
   const unknowns: LibraryFunctionIdentification["unknowns"] = [];
-  functions.forEach((input, index) => {
+  rawFunctions.forEach((rawInput, index) => {
     if (index >= budgets.max_functions) {
       unknowns.push({
-        function_id: input.function_id,
+        function_id: parseFunctionIdWithoutBytes(rawInput),
         reason: "function_budget_exceeded",
       });
       return;
     }
-    if (input.bytes.length > budgets.max_function_bytes) {
+    const envelope = libraryFunctionInputEnvelopeSchema.parse(rawInput);
+    const rawBytes = envelope.bytes;
+    const parsedBytes = Array.isArray(rawBytes)
+      ? rawBytes
+      : libraryFunctionInputSchema.parse(rawInput).bytes;
+    if (parsedBytes.length > budgets.max_function_bytes) {
       unknowns.push({
-        function_id: input.function_id,
+        function_id: envelope.function_id,
         reason: "function_bytes_budget_exceeded",
       });
       return;
     }
+    const input = libraryFunctionInputSchema.parse(rawInput);
     identified.push({
       function_id: input.function_id,
       matches: rankMatches(

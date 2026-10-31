@@ -11,6 +11,7 @@ export const MAX_LIBRARY_SIGNATURE_PATTERN_TOKENS = 1024;
 export const DEFAULT_LIBRARY_FUNCTION_BUDGET = 10_000;
 export const DEFAULT_LIBRARY_FUNCTION_BYTES_BUDGET = 4_096;
 export const DEFAULT_LIBRARY_SIGNATURE_SET_BUDGET = 10_000;
+export const DEFAULT_LIBRARY_MATCHES_BUDGET = 10_000;
 
 const OPERATION = "identify_library_functions";
 
@@ -56,6 +57,11 @@ export const libraryFunctionBudgetsSchema = z.strictObject({
     .int()
     .positive()
     .default(DEFAULT_LIBRARY_SIGNATURE_SET_BUDGET),
+  max_matches: z
+    .number()
+    .int()
+    .positive()
+    .default(DEFAULT_LIBRARY_MATCHES_BUDGET),
 });
 
 export const libraryFunctionMatchSchema = z.strictObject({
@@ -451,6 +457,7 @@ export const identifyLibraryFunctions = (
   const identified: LibraryFunctionIdentification["identified"] = [];
   const unknowns: LibraryFunctionIdentification["unknowns"] = [];
   const matchCache = new Map<string, LibraryFunctionMatch[]>();
+  let totalMatches = 0;
   const context: FunctionProcessingContext = {
     budgets,
     signatures,
@@ -466,6 +473,19 @@ export const identifyLibraryFunctions = (
         reason: outcome.value.reason,
       });
     } else {
+      totalMatches += outcome.value.matches.length;
+      if (totalMatches > budgets.max_matches) {
+        return err(
+          new AnalysisInputError(OPERATION, undefined, [
+            {
+              path: [],
+              reason: "out_of_range",
+              maximum: budgets.max_matches,
+              message: `Total matches exceed the maximum of ${budgets.max_matches} matches`,
+            },
+          ]),
+        );
+      }
       identified.push({
         function_id: outcome.value.function_id,
         matches: outcome.value.matches,

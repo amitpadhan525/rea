@@ -282,6 +282,34 @@ describe("identifyLibraryFunctions signature constraints", () => {
       expect(result.error).toBeInstanceOf(AnalysisInputError);
     }
   });
+
+  it("enforces the total matches budget across functions", () => {
+    const result = identifyLibraryFunctions(
+      [
+        { function_id: "f1", bytes: [0x90] },
+        { function_id: "f2", bytes: [0x90] },
+      ],
+      [signature("first", "90"), signature("second", "90")],
+      { max_matches: 3 },
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisInputError",
+        operation: "identify_library_functions",
+        issues: [
+          expect.objectContaining({
+            path: [],
+            reason: "out_of_range",
+            maximum: 3,
+          }),
+        ],
+      },
+    });
+    if (!result.ok) {
+      expect(result.error).toBeInstanceOf(AnalysisInputError);
+    }
+  });
 });
 
 describe("identifyLibraryFunctions signature pattern tokens", () => {

@@ -54,8 +54,7 @@ describe("identifyLibraryFunctions matching", () => {
       [{ function_id: "f1", bytes: [0x55, 0x48, 0x8b, 0xe5] }],
       [signature("memcpy", "55 48 ?? E5")],
     );
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
+    if (!result.ok) throw result.error;
     expect(result.value.identified[0]?.matches[0]).toMatchObject({
       wildcard_count: 1,
       score: 0.75,
@@ -68,8 +67,7 @@ describe("identifyLibraryFunctions matching", () => {
       [{ function_id: "f1", bytes: [0x55] }],
       [signature("short", "55 ?? ??")],
     );
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
+    if (!result.ok) throw result.error;
     expect(result.value.identified[0]?.matches).toEqual([]);
   });
 
@@ -78,8 +76,7 @@ describe("identifyLibraryFunctions matching", () => {
       [{ function_id: "f1", bytes: [0x55, 0x48, 0xe5] }],
       [signature("exact-length", "55 ?? E5")],
     );
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
+    if (!result.ok) throw result.error;
     expect(result.value.identified[0]?.matches[0]).toMatchObject({
       signature_id: "exact-length",
       pattern_length: 3,
@@ -93,8 +90,7 @@ describe("identifyLibraryFunctions matching", () => {
       [{ function_id: "f1", bytes: [0x90, 0x55, 0x48, 0x89, 0xe5] }],
       [signature("memcpy", "55 48 89 E5")],
     );
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
+    if (!result.ok) throw result.error;
     expect(result.value.identified[0]?.matches).toEqual([]);
   });
 
@@ -107,8 +103,7 @@ describe("identifyLibraryFunctions matching", () => {
         signature("exact-a", "55 48 89 E5"),
       ],
     );
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
+    if (!result.ok) throw result.error;
     expect(
       result.value.identified[0]?.matches.map((match) => match.signature_id),
     ).toEqual(["exact-a", "exact-z", "short"]);
@@ -119,8 +114,7 @@ describe("identifyLibraryFunctions matching", () => {
       [{ function_id: "f1", bytes: [0x90] }],
       [signature("nop", "90", { library_version: "2.39" })],
     );
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
+    if (!result.ok) throw result.error;
     expect(result.value.identified[0]?.matches[0]?.library_version).toBe(
       "2.39",
     );
@@ -137,8 +131,7 @@ describe("identifyLibraryFunctions budget skips", () => {
       [signature("nop", "90")],
       { max_functions: 1 },
     );
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
+    if (!result.ok) throw result.error;
     expect(result.value.unknowns).toEqual([
       { function_id: "f2", reason: "function_budget_exceeded" },
     ]);
@@ -153,8 +146,7 @@ describe("identifyLibraryFunctions budget skips", () => {
       [signature("nop", "90")],
       { max_functions: 1 },
     );
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
+    if (!result.ok) throw result.error;
     expect(result.value.unknowns).toEqual([
       { function_id: "f2", reason: "function_budget_exceeded" },
     ]);
@@ -174,8 +166,7 @@ describe("identifyLibraryFunctions budget skips", () => {
       [signature("nop", "90")],
       { max_functions: 1 },
     );
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
+    if (!result.ok) throw result.error;
     expect(result.value.unknowns).toEqual([
       { function_id: "f2", reason: "function_budget_exceeded" },
     ]);
@@ -187,8 +178,7 @@ describe("identifyLibraryFunctions budget skips", () => {
       [signature("nop", "90")],
       { max_function_bytes: 1 },
     );
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
+    if (!result.ok) throw result.error;
     expect(result.value.unknowns).toEqual([
       { function_id: "f1", reason: "function_bytes_budget_exceeded" },
     ]);
@@ -200,8 +190,7 @@ describe("identifyLibraryFunctions budget skips", () => {
       [signature("nop", "90")],
       { max_function_bytes: 1 },
     );
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
+    if (!result.ok) throw result.error;
     expect(result.value.unknowns).toEqual([
       { function_id: "f1", reason: "function_bytes_budget_exceeded" },
     ]);
@@ -216,8 +205,7 @@ describe("identifyLibraryFunctions budget skips", () => {
       [signature("nop", "90")],
       { max_functions: 2, max_function_bytes: 1 },
     );
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
+    if (!result.ok) throw result.error;
     expect(result.value.identified.map((input) => input.function_id)).toEqual([
       "f1",
       "f2",
@@ -240,7 +228,9 @@ describe("identifyLibraryFunctions signature constraints", () => {
         operation: "identify_library_functions",
         issues: [
           expect.objectContaining({
-            message: "Signature set exceeds the maximum of 1 signatures",
+            path: [],
+            reason: "out_of_range",
+            maximum: 1,
           }),
         ],
       },
@@ -262,7 +252,8 @@ describe("identifyLibraryFunctions signature constraints", () => {
         operation: "identify_library_functions",
         issues: [
           expect.objectContaining({
-            message: "Duplicate signature id: duplicate",
+            path: [1, "id"],
+            reason: "invalid_value",
           }),
         ],
       },
@@ -281,7 +272,8 @@ describe("identifyLibraryFunctions signature constraints", () => {
         operation: "identify_library_functions",
         issues: [
           expect.objectContaining({
-            message: "Pattern must contain at least one concrete byte",
+            path: [0, "pattern"],
+            reason: "invalid_value",
           }),
         ],
       },
@@ -310,7 +302,8 @@ describe("identifyLibraryFunctions signature pattern tokens", () => {
         operation: "identify_library_functions",
         issues: [
           expect.objectContaining({
-            message: `Pattern must contain at most ${MAX_LIBRARY_SIGNATURE_PATTERN_TOKENS} hexadecimal or ?? tokens`,
+            path: [0, "pattern"],
+            reason: "invalid_value",
           }),
         ],
       },
@@ -334,8 +327,7 @@ describe("identifyLibraryFunctions signature pattern tokens", () => {
       ],
       [signature("bounded", pattern)],
     );
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
+    if (!result.ok) throw result.error;
     expect(result.value.identified[0]?.matches[0]?.pattern_length).toBe(
       MAX_LIBRARY_SIGNATURE_PATTERN_TOKENS,
     );
@@ -350,7 +342,8 @@ describe("identifyLibraryFunctions signature pattern tokens", () => {
         operation: "identify_library_functions",
         issues: [
           expect.objectContaining({
-            message: `Pattern must contain at most ${MAX_LIBRARY_SIGNATURE_PATTERN_TOKENS} hexadecimal or ?? tokens`,
+            path: [0, "pattern"],
+            reason: "invalid_value",
           }),
         ],
       },

@@ -346,12 +346,33 @@ type FunctionProcessingOutcome =
         | "function_bytes_budget_exceeded";
     };
 
+const getCandidateMatches = (
+  bytes: readonly number[],
+  signatures: readonly CompiledSignature[],
+  matchCache: Map<string, LibraryFunctionMatch[]>,
+): LibraryFunctionMatch[] => {
+  const cacheKey = bytes.join(",");
+  const cached = matchCache.get(cacheKey);
+  if (cached) return cached;
+  const result = rankMatches(
+    signatures.filter((signature) => matches(bytes, signature)),
+  );
+  matchCache.set(cacheKey, result);
+  return result;
+};
+
+type FunctionProcessingContext = {
+  readonly budgets: LibraryFunctionBudgets;
+  readonly signatures: readonly CompiledSignature[];
+  readonly matchCache: Map<string, LibraryFunctionMatch[]>;
+};
+
 const processFunctionInput = (
   rawInput: unknown,
   index: number,
-  budgets: LibraryFunctionBudgets,
-  signatures: readonly CompiledSignature[],
+  context: FunctionProcessingContext,
 ): Result<FunctionProcessingOutcome, AnalysisInputError> => {
+  const { budgets, signatures, matchCache } = context;
   if (index >= budgets.max_functions) {
     const parsedId = parseFunctionIdWithoutBytes(rawInput, index);
     if (!parsedId.ok) return parsedId;
@@ -401,9 +422,7 @@ const processFunctionInput = (
   return ok({
     kind: "identified",
     function_id: input.data.function_id,
-    matches: rankMatches(
-      signatures.filter((signature) => matches(input.data.bytes, signature)),
-    ),
+    matches: getCandidateMatches(input.data.bytes, signatures, matchCache),
   });
 };
 
@@ -431,14 +450,15 @@ export const identifyLibraryFunctions = (
 
   const identified: LibraryFunctionIdentification["identified"] = [];
   const unknowns: LibraryFunctionIdentification["unknowns"] = [];
+  const matchCache = new Map<string, LibraryFunctionMatch[]>();
+  const context: FunctionProcessingContext = {
+    budgets,
+    signatures,
+    matchCache,
+  };
 
   for (let index = 0; index < rawFunctions.length; index++) {
-    const outcome = processFunctionInput(
-      rawFunctions[index],
-      index,
-      budgets,
-      signatures,
-    );
+    const outcome = processFunctionInput(rawFunctions[index], index, context);
     if (!outcome.ok) return outcome;
     if (outcome.value.kind === "unknown") {
       unknowns.push({

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { z } from "zod";
+import { AnalysisInputError } from "../analysisErrorCore.js";
 import {
   identifyLibraryFunctions,
   MAX_LIBRARY_SIGNATURE_PATTERN_TOKENS,
@@ -17,7 +17,7 @@ const signature = (
   ...overrides,
 });
 
-describe("identifyLibraryFunctions", () => {
+describe("identifyLibraryFunctions matching", () => {
   it("matches exact signatures at the function start", () => {
     expect(
       identifyLibraryFunctions(
@@ -25,24 +25,27 @@ describe("identifyLibraryFunctions", () => {
         [signature("memcpy", "55 48 89 E5")],
       ),
     ).toEqual({
-      identified: [
-        {
-          function_id: "f1",
-          matches: [
-            {
-              signature_id: "memcpy",
-              name: "memcpy",
-              library: "libc",
-              library_version: null,
-              pattern_length: 4,
-              wildcard_count: 0,
-              score: 1,
-              confidence: "exact",
-            },
-          ],
-        },
-      ],
-      unknowns: [],
+      ok: true,
+      value: {
+        identified: [
+          {
+            function_id: "f1",
+            matches: [
+              {
+                signature_id: "memcpy",
+                name: "memcpy",
+                library: "libc",
+                library_version: null,
+                pattern_length: 4,
+                wildcard_count: 0,
+                score: 1,
+                confidence: "exact",
+              },
+            ],
+          },
+        ],
+        unknowns: [],
+      },
     });
   });
 
@@ -51,7 +54,9 @@ describe("identifyLibraryFunctions", () => {
       [{ function_id: "f1", bytes: [0x55, 0x48, 0x8b, 0xe5] }],
       [signature("memcpy", "55 48 ?? E5")],
     );
-    expect(result.identified[0]?.matches[0]).toMatchObject({
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.identified[0]?.matches[0]).toMatchObject({
       wildcard_count: 1,
       score: 0.75,
       confidence: "pattern",
@@ -63,7 +68,9 @@ describe("identifyLibraryFunctions", () => {
       [{ function_id: "f1", bytes: [0x55] }],
       [signature("short", "55 ?? ??")],
     );
-    expect(result.identified[0]?.matches).toEqual([]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.identified[0]?.matches).toEqual([]);
   });
 
   it("matches wildcard signatures at the exact function length", () => {
@@ -71,7 +78,9 @@ describe("identifyLibraryFunctions", () => {
       [{ function_id: "f1", bytes: [0x55, 0x48, 0xe5] }],
       [signature("exact-length", "55 ?? E5")],
     );
-    expect(result.identified[0]?.matches[0]).toMatchObject({
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.identified[0]?.matches[0]).toMatchObject({
       signature_id: "exact-length",
       pattern_length: 3,
       wildcard_count: 1,
@@ -84,7 +93,9 @@ describe("identifyLibraryFunctions", () => {
       [{ function_id: "f1", bytes: [0x90, 0x55, 0x48, 0x89, 0xe5] }],
       [signature("memcpy", "55 48 89 E5")],
     );
-    expect(result.identified[0]?.matches).toEqual([]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.identified[0]?.matches).toEqual([]);
   });
 
   it("keeps all equally valid signatures with deterministic ranking", () => {
@@ -96,8 +107,10 @@ describe("identifyLibraryFunctions", () => {
         signature("exact-a", "55 48 89 E5"),
       ],
     );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
     expect(
-      result.identified[0]?.matches.map((match) => match.signature_id),
+      result.value.identified[0]?.matches.map((match) => match.signature_id),
     ).toEqual(["exact-a", "exact-z", "short"]);
   });
 
@@ -106,11 +119,15 @@ describe("identifyLibraryFunctions", () => {
       [{ function_id: "f1", bytes: [0x90] }],
       [signature("nop", "90", { library_version: "2.39" })],
     );
-    expect(result.identified[0]?.matches[0]?.library_version).toBe("2.39");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.identified[0]?.matches[0]?.library_version).toBe(
+      "2.39",
+    );
   });
 });
 
-describe("identifyLibraryFunctions resource limits", () => {
+describe("identifyLibraryFunctions budget skips", () => {
   it("reports functions beyond the function budget as unknown", () => {
     const result = identifyLibraryFunctions(
       [
@@ -120,7 +137,9 @@ describe("identifyLibraryFunctions resource limits", () => {
       [signature("nop", "90")],
       { max_functions: 1 },
     );
-    expect(result.unknowns).toEqual([
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.unknowns).toEqual([
       { function_id: "f2", reason: "function_budget_exceeded" },
     ]);
   });
@@ -134,7 +153,9 @@ describe("identifyLibraryFunctions resource limits", () => {
       [signature("nop", "90")],
       { max_functions: 1 },
     );
-    expect(result.unknowns).toEqual([
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.unknowns).toEqual([
       { function_id: "f2", reason: "function_budget_exceeded" },
     ]);
   });
@@ -153,7 +174,9 @@ describe("identifyLibraryFunctions resource limits", () => {
       [signature("nop", "90")],
       { max_functions: 1 },
     );
-    expect(result.unknowns).toEqual([
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.unknowns).toEqual([
       { function_id: "f2", reason: "function_budget_exceeded" },
     ]);
   });
@@ -164,7 +187,9 @@ describe("identifyLibraryFunctions resource limits", () => {
       [signature("nop", "90")],
       { max_function_bytes: 1 },
     );
-    expect(result.unknowns).toEqual([
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.unknowns).toEqual([
       { function_id: "f1", reason: "function_bytes_budget_exceeded" },
     ]);
   });
@@ -175,7 +200,9 @@ describe("identifyLibraryFunctions resource limits", () => {
       [signature("nop", "90")],
       { max_function_bytes: 1 },
     );
-    expect(result.unknowns).toEqual([
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.unknowns).toEqual([
       { function_id: "f1", reason: "function_bytes_budget_exceeded" },
     ]);
   });
@@ -189,50 +216,108 @@ describe("identifyLibraryFunctions resource limits", () => {
       [signature("nop", "90")],
       { max_functions: 2, max_function_bytes: 1 },
     );
-    expect(result.identified.map((input) => input.function_id)).toEqual([
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.identified.map((input) => input.function_id)).toEqual([
       "f1",
       "f2",
     ]);
-    expect(result.unknowns).toEqual([]);
+    expect(result.value.unknowns).toEqual([]);
   });
+});
 
+describe("identifyLibraryFunctions signature constraints", () => {
   it("enforces the signature budget before validating signatures", () => {
-    expect(() =>
-      identifyLibraryFunctions(
-        [],
-        [signature("first", "90"), { invalid: true }],
-        { max_signatures: 1 },
-      ),
-    ).toThrow(/Signature set exceeds the maximum of 1 signatures/u);
+    const result = identifyLibraryFunctions(
+      [],
+      [signature("first", "90"), { invalid: true }],
+      { max_signatures: 1 },
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisInputError",
+        operation: "identify_library_functions",
+        issues: [
+          expect.objectContaining({
+            message: "Signature set exceeds the maximum of 1 signatures",
+          }),
+        ],
+      },
+    });
+    if (!result.ok) {
+      expect(result.error).toBeInstanceOf(AnalysisInputError);
+    }
   });
 
   it("rejects duplicate signature ids", () => {
-    expect(() =>
-      identifyLibraryFunctions(
-        [],
-        [signature("duplicate", "90"), signature("duplicate", "91")],
-      ),
-    ).toThrow(z.ZodError);
+    const result = identifyLibraryFunctions(
+      [],
+      [signature("duplicate", "90"), signature("duplicate", "91")],
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisInputError",
+        operation: "identify_library_functions",
+        issues: [
+          expect.objectContaining({
+            message: "Duplicate signature id: duplicate",
+          }),
+        ],
+      },
+    });
+    if (!result.ok) {
+      expect(result.error).toBeInstanceOf(AnalysisInputError);
+    }
   });
 
   it("rejects all-wildcard signatures", () => {
-    expect(() =>
-      identifyLibraryFunctions([], [signature("wild", "?? ??")]),
-    ).toThrow(z.ZodError);
-  });
-
-  it("rejects patterns over the token cap", () => {
-    expect(() =>
-      identifyLibraryFunctions(
-        [],
-        [
-          signature(
-            "long",
-            "90 ".repeat(MAX_LIBRARY_SIGNATURE_PATTERN_TOKENS + 1),
-          ),
+    const result = identifyLibraryFunctions([], [signature("wild", "?? ??")]);
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisInputError",
+        operation: "identify_library_functions",
+        issues: [
+          expect.objectContaining({
+            message: "Pattern must contain at least one concrete byte",
+          }),
         ],
-      ),
-    ).toThrow(z.ZodError);
+      },
+    });
+    if (!result.ok) {
+      expect(result.error).toBeInstanceOf(AnalysisInputError);
+    }
+  });
+});
+
+describe("identifyLibraryFunctions signature pattern tokens", () => {
+  it("rejects patterns over the token cap", () => {
+    const result = identifyLibraryFunctions(
+      [],
+      [
+        signature(
+          "long",
+          "90 ".repeat(MAX_LIBRARY_SIGNATURE_PATTERN_TOKENS + 1),
+        ),
+      ],
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisInputError",
+        operation: "identify_library_functions",
+        issues: [
+          expect.objectContaining({
+            message: `Pattern must contain at most ${MAX_LIBRARY_SIGNATURE_PATTERN_TOKENS} hexadecimal or ?? tokens`,
+          }),
+        ],
+      },
+    });
+    if (!result.ok) {
+      expect(result.error).toBeInstanceOf(AnalysisInputError);
+    }
   });
 
   it("accepts the token limit with mixed whitespace and rejects oversized tokens", () => {
@@ -249,11 +334,139 @@ describe("identifyLibraryFunctions resource limits", () => {
       ],
       [signature("bounded", pattern)],
     );
-    expect(result.identified[0]?.matches[0]?.pattern_length).toBe(
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.identified[0]?.matches[0]?.pattern_length).toBe(
       MAX_LIBRARY_SIGNATURE_PATTERN_TOKENS,
     );
-    expect(() =>
-      identifyLibraryFunctions([], [signature("bad", "9".repeat(100_000))]),
-    ).toThrow(z.ZodError);
+    const bad = identifyLibraryFunctions(
+      [],
+      [signature("bad", "9".repeat(100_000))],
+    );
+    expect(bad).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisInputError",
+        operation: "identify_library_functions",
+        issues: [
+          expect.objectContaining({
+            message: `Pattern must contain at most ${MAX_LIBRARY_SIGNATURE_PATTERN_TOKENS} hexadecimal or ?? tokens`,
+          }),
+        ],
+      },
+    });
+    if (!bad.ok) {
+      expect(bad.error).toBeInstanceOf(AnalysisInputError);
+    }
+  });
+
+  it("rejects malformed hexadecimal patterns with an error Result", () => {
+    const badHex = identifyLibraryFunctions(
+      [],
+      [signature("bad-hex", "ZZ 90")],
+    );
+    expect(badHex).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisInputError",
+        operation: "identify_library_functions",
+      },
+    });
+    if (!badHex.ok) {
+      expect(badHex.error).toBeInstanceOf(AnalysisInputError);
+    }
+
+    const oddNibble = identifyLibraryFunctions([], [signature("odd", "9")]);
+    expect(oddNibble).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisInputError",
+        operation: "identify_library_functions",
+      },
+    });
+  });
+});
+
+describe("identifyLibraryFunctions input errors", () => {
+  it("rejects invalid resource budgets with an error Result", () => {
+    const negativeFunctions = identifyLibraryFunctions([], [], {
+      max_functions: -1,
+    });
+    expect(negativeFunctions).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisInputError",
+        operation: "identify_library_functions",
+      },
+    });
+    if (!negativeFunctions.ok) {
+      expect(negativeFunctions.error).toBeInstanceOf(AnalysisInputError);
+    }
+
+    const zeroSignatures = identifyLibraryFunctions([], [], {
+      max_signatures: 0,
+    });
+    expect(zeroSignatures).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisInputError",
+        operation: "identify_library_functions",
+      },
+    });
+
+    const invalidType = identifyLibraryFunctions([], [], "invalid");
+    expect(invalidType).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisInputError",
+        operation: "identify_library_functions",
+      },
+    });
+  });
+
+  it("rejects non-array inputs with an error Result", () => {
+    const badFunctions = identifyLibraryFunctions("not an array" as never, []);
+    expect(badFunctions).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisInputError",
+        operation: "identify_library_functions",
+      },
+    });
+
+    const badSignatures = identifyLibraryFunctions([], "not an array" as never);
+    expect(badSignatures).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisInputError",
+        operation: "identify_library_functions",
+      },
+    });
+  });
+
+  it("rejects invalid function inputs with an error Result", () => {
+    const emptyId = identifyLibraryFunctions(
+      [{ function_id: "", bytes: [0x90] }],
+      [signature("nop", "90")],
+    );
+    expect(emptyId).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisInputError",
+        operation: "identify_library_functions",
+      },
+    });
+
+    const invalidBytes = identifyLibraryFunctions(
+      [{ function_id: "f1", bytes: [300] }],
+      [signature("nop", "90")],
+    );
+    expect(invalidBytes).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisInputError",
+        operation: "identify_library_functions",
+      },
+    });
   });
 });

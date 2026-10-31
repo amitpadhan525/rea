@@ -1,10 +1,18 @@
 import { z } from "zod";
 import { compareUnicodeCodePoints } from "../unicodeCodePointOrder.js";
+import { err, ok, type Result } from "../result.js";
+import { AnalysisInputError } from "../analysisErrorCore.js";
+import {
+  analysisInputErrorFromIssues,
+  projectInputIssues,
+} from "../inputIssueProjection.js";
 
 export const MAX_LIBRARY_SIGNATURE_PATTERN_TOKENS = 1024;
 export const DEFAULT_LIBRARY_FUNCTION_BUDGET = 10_000;
 export const DEFAULT_LIBRARY_FUNCTION_BYTES_BUDGET = 4_096;
 export const DEFAULT_LIBRARY_SIGNATURE_SET_BUDGET = 10_000;
+
+const OPERATION = "identify_library_functions";
 
 const signatureToken = /^(?:[0-9A-Fa-f]{2}|\?\?)$/u;
 
@@ -97,16 +105,20 @@ type CompiledSignature = LibraryFunctionSignature & {
   readonly concrete_count: number;
 };
 
-const parseSignature = (raw: LibraryFunctionSignature): CompiledSignature => {
-  const invalidPattern = (): never => {
-    throw new z.ZodError([
-      {
-        code: "custom",
-        path: ["pattern"],
-        message: `Pattern must contain at most ${MAX_LIBRARY_SIGNATURE_PATTERN_TOKENS} hexadecimal or ?? tokens`,
-      },
-    ]);
-  };
+const parseSignature = (
+  raw: LibraryFunctionSignature,
+  signatureIndex: number,
+): Result<CompiledSignature, AnalysisInputError> => {
+  const invalidPattern = (): Result<never, AnalysisInputError> =>
+    err(
+      new AnalysisInputError(OPERATION, undefined, [
+        {
+          path: [signatureIndex, "pattern"],
+          reason: "invalid_value",
+          message: `Pattern must contain at most ${MAX_LIBRARY_SIGNATURE_PATTERN_TOKENS} hexadecimal or ?? tokens`,
+        },
+      ]),
+    );
   // Reject excess or malformed tokens while scanning, before constructing an
   // array proportional to an untrusted pattern's full length.
   const bytes: (number | null)[] = [];
@@ -115,54 +127,83 @@ const parseSignature = (raw: LibraryFunctionSignature): CompiledSignature => {
     while (offset < raw.pattern.length && /\s/u.test(raw.pattern[offset]!))
       offset++;
     if (offset === raw.pattern.length) break;
-    if (bytes.length === MAX_LIBRARY_SIGNATURE_PATTERN_TOKENS) invalidPattern();
+    if (bytes.length === MAX_LIBRARY_SIGNATURE_PATTERN_TOKENS)
+      return invalidPattern();
     const start = offset;
     while (offset < raw.pattern.length && !/\s/u.test(raw.pattern[offset]!)) {
       offset++;
-      if (offset - start > 2) invalidPattern();
+      if (offset - start > 2) return invalidPattern();
     }
     const token = raw.pattern.slice(start, offset);
-    if (!signatureToken.test(token)) invalidPattern();
+    if (!signatureToken.test(token)) return invalidPattern();
     bytes.push(token === "??" ? null : Number.parseInt(token, 16));
   }
   const wildcard_count = bytes.filter((byte) => byte === null).length;
   const concrete_count = bytes.length - wildcard_count;
   if (concrete_count === 0)
-    throw new z.ZodError([
-      {
-        code: "custom",
-        path: ["pattern"],
-        message: "Pattern must contain at least one concrete byte",
-      },
-    ]);
-  return { ...raw, bytes, wildcard_count, concrete_count };
+    return err(
+      new AnalysisInputError(OPERATION, undefined, [
+        {
+          path: [signatureIndex, "pattern"],
+          reason: "invalid_value",
+          message: "Pattern must contain at least one concrete byte",
+        },
+      ]),
+    );
+  return ok({ ...raw, bytes, wildcard_count, concrete_count });
 };
 
 const compileSignatures = (
-  raw: readonly LibraryFunctionSignature[],
+  rawSignatures: readonly unknown[],
   maxSignatures: number,
-): readonly CompiledSignature[] => {
-  if (raw.length > maxSignatures)
-    throw new z.ZodError([
-      {
-        code: "custom",
-        path: [],
-        message: `Signature set exceeds the maximum of ${maxSignatures} signatures`,
-      },
-    ]);
-  const seen = new Set<string>();
-  return raw.map((signature) => {
-    if (seen.has(signature.id))
-      throw new z.ZodError([
+): Result<readonly CompiledSignature[], AnalysisInputError> => {
+  if (rawSignatures.length > maxSignatures)
+    return err(
+      new AnalysisInputError(OPERATION, undefined, [
         {
-          code: "custom",
-          path: ["id"],
-          message: `Duplicate signature id: ${signature.id}`,
+          path: [],
+          reason: "out_of_range",
+          message: `Signature set exceeds the maximum of ${maxSignatures} signatures`,
+          maximum: maxSignatures,
         },
-      ]);
+      ]),
+    );
+  const seen = new Set<string>();
+  const compiled: CompiledSignature[] = [];
+  for (let index = 0; index < rawSignatures.length; index++) {
+    const rawSignature = rawSignatures[index];
+    const parsedSignature =
+      libraryFunctionSignatureSchema.safeParse(rawSignature);
+    if (!parsedSignature.success)
+      return err(
+        new AnalysisInputError(
+          OPERATION,
+          { cause: parsedSignature.error },
+          projectInputIssues(parsedSignature.error.issues, rawSignature).map(
+            (issue) => ({
+              ...issue,
+              path: [index, ...issue.path],
+            }),
+          ),
+        ),
+      );
+    const signature = parsedSignature.data;
+    if (seen.has(signature.id))
+      return err(
+        new AnalysisInputError(OPERATION, undefined, [
+          {
+            path: [index, "id"],
+            reason: "invalid_value",
+            message: `Duplicate signature id: ${signature.id}`,
+          },
+        ]),
+      );
     seen.add(signature.id);
-    return parseSignature(signature);
-  });
+    const parsed = parseSignature(signature, index);
+    if (!parsed.ok) return parsed;
+    compiled.push(parsed.value);
+  }
+  return ok(compiled);
 };
 
 const matches = (
@@ -198,78 +239,221 @@ const rankMatches = (
         compareUnicodeCodePoints(left.signature_id, right.signature_id),
     );
 
-const parseFunctionIdWithoutBytes = (rawInput: unknown): string => {
+const parseFunctionIdWithoutBytes = (
+  rawInput: unknown,
+  functionIndex: number,
+): Result<string, AnalysisInputError> => {
   if (
     typeof rawInput !== "object" ||
     rawInput === null ||
     Array.isArray(rawInput)
-  )
-    return libraryFunctionInputEnvelopeSchema.parse(rawInput).function_id;
+  ) {
+    const parsed = libraryFunctionInputEnvelopeSchema.safeParse(rawInput);
+    if (!parsed.success)
+      return err(
+        new AnalysisInputError(
+          OPERATION,
+          { cause: parsed.error },
+          projectInputIssues(parsed.error.issues, rawInput).map((issue) => ({
+            ...issue,
+            path: [functionIndex, ...issue.path],
+          })),
+        ),
+      );
+    return ok(parsed.data.function_id);
+  }
 
   const keys = Object.keys(rawInput);
   if (
     keys.length !== 2 ||
     !keys.includes("function_id") ||
     !keys.includes("bytes")
-  )
-    return libraryFunctionInputEnvelopeSchema.parse(rawInput).function_id;
+  ) {
+    const parsed = libraryFunctionInputEnvelopeSchema.safeParse(rawInput);
+    if (!parsed.success)
+      return err(
+        new AnalysisInputError(
+          OPERATION,
+          { cause: parsed.error },
+          projectInputIssues(parsed.error.issues, rawInput).map((issue) => ({
+            ...issue,
+            path: [functionIndex, ...issue.path],
+          })),
+        ),
+      );
+    return ok(parsed.data.function_id);
+  }
 
-  return libraryFunctionIdSchema.parse(
+  const parsedId = libraryFunctionIdSchema.safeParse(
     (rawInput as { readonly function_id: unknown }).function_id,
   );
+  if (!parsedId.success)
+    return err(
+      new AnalysisInputError(
+        OPERATION,
+        { cause: parsedId.error },
+        projectInputIssues(parsedId.error.issues, rawInput).map((issue) => ({
+          ...issue,
+          path: [functionIndex, "function_id", ...issue.path],
+        })),
+      ),
+    );
+  return ok(parsedId.data);
+};
+
+const parseBudgets = (
+  rawBudgets: unknown,
+): Result<LibraryFunctionBudgets, AnalysisInputError> => {
+  const budgetInput = rawBudgets === undefined ? {} : rawBudgets;
+  const budgetsParsed = libraryFunctionBudgetsSchema.safeParse(budgetInput);
+  if (!budgetsParsed.success)
+    return err(
+      analysisInputErrorFromIssues(
+        OPERATION,
+        budgetsParsed.error.issues,
+        budgetInput,
+        { cause: budgetsParsed.error },
+      ),
+    );
+  return ok(budgetsParsed.data);
+};
+
+const validateArrayInput = (
+  input: unknown,
+): Result<readonly unknown[], AnalysisInputError> => {
+  if (Array.isArray(input)) return ok(input);
+  const parsed = z.array(z.unknown()).safeParse(input);
+  if (!parsed.success)
+    return err(
+      analysisInputErrorFromIssues(OPERATION, parsed.error.issues, input, {
+        cause: parsed.error,
+      }),
+    );
+  return ok(parsed.data);
+};
+
+type FunctionProcessingOutcome =
+  | {
+      readonly kind: "identified";
+      readonly function_id: string;
+      readonly matches: LibraryFunctionMatch[];
+    }
+  | {
+      readonly kind: "unknown";
+      readonly function_id: string;
+      readonly reason:
+        | "function_budget_exceeded"
+        | "function_bytes_budget_exceeded";
+    };
+
+const processFunctionInput = (
+  rawInput: unknown,
+  index: number,
+  budgets: LibraryFunctionBudgets,
+  signatures: readonly CompiledSignature[],
+): Result<FunctionProcessingOutcome, AnalysisInputError> => {
+  if (index >= budgets.max_functions) {
+    const parsedId = parseFunctionIdWithoutBytes(rawInput, index);
+    if (!parsedId.ok) return parsedId;
+    return ok({
+      kind: "unknown",
+      function_id: parsedId.value,
+      reason: "function_budget_exceeded",
+    });
+  }
+  const envelope = libraryFunctionInputEnvelopeSchema.safeParse(rawInput);
+  if (!envelope.success)
+    return err(
+      new AnalysisInputError(
+        OPERATION,
+        { cause: envelope.error },
+        projectInputIssues(envelope.error.issues, rawInput).map((issue) => ({
+          ...issue,
+          path: [index, ...issue.path],
+        })),
+      ),
+    );
+  const rawBytes = envelope.data.bytes;
+  if (Array.isArray(rawBytes) && rawBytes.length > budgets.max_function_bytes)
+    return ok({
+      kind: "unknown",
+      function_id: envelope.data.function_id,
+      reason: "function_bytes_budget_exceeded",
+    });
+  const input = libraryFunctionInputSchema.safeParse(rawInput);
+  if (!input.success)
+    return err(
+      new AnalysisInputError(
+        OPERATION,
+        { cause: input.error },
+        projectInputIssues(input.error.issues, rawInput).map((issue) => ({
+          ...issue,
+          path: [index, ...issue.path],
+        })),
+      ),
+    );
+  if (input.data.bytes.length > budgets.max_function_bytes)
+    return ok({
+      kind: "unknown",
+      function_id: input.data.function_id,
+      reason: "function_bytes_budget_exceeded",
+    });
+  return ok({
+    kind: "identified",
+    function_id: input.data.function_id,
+    matches: rankMatches(
+      signatures.filter((signature) => matches(input.data.bytes, signature)),
+    ),
+  });
 };
 
 export const identifyLibraryFunctions = (
   rawFunctions: readonly unknown[],
   rawSignatures: readonly unknown[],
   rawBudgets: unknown = {},
-): LibraryFunctionIdentification => {
-  const budgets = libraryFunctionBudgetsSchema.parse(rawBudgets);
-  if (!Array.isArray(rawFunctions)) z.array(z.unknown()).parse(rawFunctions);
-  if (!Array.isArray(rawSignatures)) z.array(z.unknown()).parse(rawSignatures);
-  if (rawSignatures.length > budgets.max_signatures)
-    throw new z.ZodError([
-      {
-        code: "custom",
-        path: [],
-        message: `Signature set exceeds the maximum of ${budgets.max_signatures} signatures`,
-      },
-    ]);
-  const signatures = compileSignatures(
-    rawSignatures.map((signature) =>
-      libraryFunctionSignatureSchema.parse(signature),
-    ),
+): Result<LibraryFunctionIdentification, AnalysisInputError> => {
+  const budgetsResult = parseBudgets(rawBudgets);
+  if (!budgetsResult.ok) return budgetsResult;
+  const budgets = budgetsResult.value;
+
+  const functionsResult = validateArrayInput(rawFunctions);
+  if (!functionsResult.ok) return functionsResult;
+
+  const signaturesInputResult = validateArrayInput(rawSignatures);
+  if (!signaturesInputResult.ok) return signaturesInputResult;
+
+  const signaturesResult = compileSignatures(
+    signaturesInputResult.value,
     budgets.max_signatures,
   );
+  if (!signaturesResult.ok) return signaturesResult;
+  const signatures = signaturesResult.value;
+
   const identified: LibraryFunctionIdentification["identified"] = [];
   const unknowns: LibraryFunctionIdentification["unknowns"] = [];
-  rawFunctions.forEach((rawInput, index) => {
-    if (index >= budgets.max_functions) {
+
+  for (let index = 0; index < rawFunctions.length; index++) {
+    const outcome = processFunctionInput(
+      rawFunctions[index],
+      index,
+      budgets,
+      signatures,
+    );
+    if (!outcome.ok) return outcome;
+    if (outcome.value.kind === "unknown") {
       unknowns.push({
-        function_id: parseFunctionIdWithoutBytes(rawInput),
-        reason: "function_budget_exceeded",
+        function_id: outcome.value.function_id,
+        reason: outcome.value.reason,
       });
-      return;
-    }
-    const envelope = libraryFunctionInputEnvelopeSchema.parse(rawInput);
-    const rawBytes = envelope.bytes;
-    const parsedBytes = Array.isArray(rawBytes)
-      ? rawBytes
-      : libraryFunctionInputSchema.parse(rawInput).bytes;
-    if (parsedBytes.length > budgets.max_function_bytes) {
-      unknowns.push({
-        function_id: envelope.function_id,
-        reason: "function_bytes_budget_exceeded",
+    } else {
+      identified.push({
+        function_id: outcome.value.function_id,
+        matches: outcome.value.matches,
       });
-      return;
     }
-    const input = libraryFunctionInputSchema.parse(rawInput);
-    identified.push({
-      function_id: input.function_id,
-      matches: rankMatches(
-        signatures.filter((signature) => matches(input.bytes, signature)),
-      ),
-    });
-  });
-  return libraryFunctionIdentificationSchema.parse({ identified, unknowns });
+  }
+
+  return ok(
+    libraryFunctionIdentificationSchema.parse({ identified, unknowns }),
+  );
 };
